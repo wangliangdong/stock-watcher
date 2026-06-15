@@ -10,8 +10,39 @@ import json
 import requests
 import time
 import subprocess
+from datetime import datetime, time as dtime
 
 from config import WATCHLIST_FILE, ALERTS_FILE
+
+# ── A股交易日历（timor.tech 免费 API） ─────────────────────
+
+_HOLIDAY_CACHE = {}
+
+def is_trading_day():
+    """判断今天是否为 A 股交易日（含调休上班日）。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if today in _HOLIDAY_CACHE:
+        return _HOLIDAY_CACHE[today]
+    try:
+        url = f"https://timor.tech/api/holiday/info/{today}"
+        resp = requests.get(url, timeout=5)
+        data = resp.json()
+        t = data.get("type", {}).get("type", 0)
+        result = t in (0, 3)
+        _HOLIDAY_CACHE[today] = result
+        return result
+    except Exception:
+        result = datetime.now().weekday() < 5
+        _HOLIDAY_CACHE[today] = result
+        return result
+
+
+def is_trading_time():
+    """判断当前是否为 A 股交易时段（9:30-11:30, 13:00-15:00）。"""
+    if not is_trading_day():
+        return False
+    t = datetime.now().time()
+    return dtime(9, 30) <= t <= dtime(11, 30) or dtime(13, 0) <= t <= dtime(15, 0)
 
 # ── East Money API helpers ──────────────────────────────────
 
@@ -104,6 +135,10 @@ def check_alerts_inline():
 
 def summarize_performance():
     """Summarize performance of all stocks in watchlist."""
+    if not is_trading_time():
+        print("⏸ 当前非交易时间，跳过行情查询。交易时段：9:30-11:30, 13:00-15:00（周一至周五）")
+        return
+
     if not os.path.exists(WATCHLIST_FILE):
         print("自选股列表不存在。")
         return

@@ -12,8 +12,48 @@ import os
 import sys
 import argparse
 import requests
+from datetime import datetime, time
 
 from config import ALERTS_FILE
+
+# ── A股交易日历（timor.tech 免费 API） ─────────────────────
+
+_HOLIDAY_CACHE = {}  # {date_str: bool} 缓存节假日查询结果
+
+def is_trading_day():
+    """判断今天是否为 A 股交易日（含调休上班日）。
+    使用 timor.tech 免费 API 查询中国法定节假日/调休安排。
+    type.type: 0=工作日, 1=周末, 2=节假日, 3=调休上班
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    if today in _HOLIDAY_CACHE:
+        return _HOLIDAY_CACHE[today]
+    try:
+        url = f"https://timor.tech/api/holiday/info/{today}"
+        resp = requests.get(url, timeout=5)
+        data = resp.json()
+        t = data.get("type", {}).get("type", 0)
+        # type=0 工作日 或 type=3 调休上班 → 交易日
+        result = t in (0, 3)
+        _HOLIDAY_CACHE[today] = result
+        return result
+    except Exception:
+        # API 不可用时降级为周一至周五
+        result = datetime.now().weekday() < 5
+        _HOLIDAY_CACHE[today] = result
+        return result
+
+
+def is_trading_time():
+    """判断当前是否为 A 股交易时段。
+    交易时段：9:30-11:30, 13:00-15:00，且必须是交易日。
+    """
+    if not is_trading_day():
+        return False
+    t = datetime.now().time()
+    morning = time(9, 30) <= t <= time(11, 30)
+    afternoon = time(13, 0) <= t <= time(15, 0)
+    return morning or afternoon
 
 
 # ── A股涨跌停限制 ───────────────────────────────────────
@@ -106,6 +146,11 @@ def check_alerts(dry_run=False):
     One-shot alerts are auto-deleted after trigger.
     Also checks limit-up/limit-down for ALL stocks in watchlist.
     """
+    # 非交易时间直接跳过
+    if not is_trading_time():
+        print("⏸ 当前非交易时间，跳过预警检查。")
+        return []
+
     alerts = load_alerts()
     triggered = []
     to_delete = []
